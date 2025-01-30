@@ -1,32 +1,50 @@
+import os
 import argparse
 
-PAD_SYMBOL = "<PAD>"
-UNK_SYMBOL = "<UNK>"
+# Get absolute path to project root
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-DATA_DIR = '../mimicdata/'
-CAML_DIR = '../mimicdata/caml/'
+# Data directories
+DATA_DIR = os.path.join(BASE_DIR, 'mimicdata')
+GENERATED_DIR = os.path.join(DATA_DIR, 'processed')
+CAML_DIR = os.path.join(DATA_DIR, 'caml')
 
-GENERATED_DIR = '../mimicdata/generated/'
-NOTEEVENTS_FILE_PATH = '../mimicdata/NOTEEVENTS.csv'
-DIAGNOSES_FILE_PATH = '../mimicdata/DIAGNOSES_ICD.csv'
-PORCEDURES_FILE_PATH = '../mimicdata/PROCEDURES_ICD.csv'
-DIAG_CODE_DESC_FILE_PATH = '../mimicdata/D_ICD_DIAGNOSES.csv'
-PROC_CODE_DESC_FILE_PATH = '../mimicdata/D_ICD_PROCEDURES.csv'
-ICD_DESC_FILE_PATH = '../mimicdata/ICD9_descriptions'
+# Ensure directories exist
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(GENERATED_DIR, exist_ok=True)
+os.makedirs(CAML_DIR, exist_ok=True)
 
-VOCAB_FILE_PATH = '../mimicdata/generated/vocab.csv'
-EMBED_FILE_PATH = '../mimicdata/generated/vocab.embed'
-CODE_FREQ_PATH = '../mimicdata/generated/code_freq.csv'
-CODE_DESC_VECTOR_PATH = '../mimicdata/generated/code_desc_vectors.csv'
+# Data files with absolute paths
+NOTEEVENTS_FILE_PATH = os.path.join(DATA_DIR, 'NOTEEVENTS.csv')
+PROCEDURES_FILE_PATH = os.path.join(DATA_DIR, 'PROCEDURES_ICD.csv')
+DIAGNOSES_FILE_PATH = os.path.join(DATA_DIR, 'DIAGNOSES_ICD.csv')
 
+# Code description files
+DIAG_CODE_DESC_FILE_PATH = os.path.join(DATA_DIR, 'D_ICD_DIAGNOSES.csv')
+PROC_CODE_DESC_FILE_PATH = os.path.join(DATA_DIR, 'D_ICD_PROCEDURES.csv')
+ICD_DESC_FILE_PATH = os.path.join(DATA_DIR, 'ICD9_descriptions')
+
+# Generated files
+VOCAB_FILE_PATH = os.path.join(GENERATED_DIR, 'vocab.csv')
+EMBED_FILE_PATH = os.path.join(GENERATED_DIR, 'vocab.embed')
+CODE_FREQ_PATH = os.path.join(GENERATED_DIR, 'code_freq.csv')
+CODE_DESC_VECTOR_PATH = os.path.join(GENERATED_DIR, 'code_desc_vectors.csv')
+
+# Special tokens
+PAD_SYMBOL = '<PAD>'
+UNK_SYMBOL = '<UNK>'
+
+# Constants
 FULL = 'full'
 TOP50 = '50'
-
 
 # Debug version
 def get_args():
     parser = argparse.ArgumentParser()
-
+    parser.add_argument('--data_dir', type=str, default=DATA_DIR,
+                      help='Directory containing the MIMIC III data')
+    parser.add_argument('--generated_dir', type=str, default=GENERATED_DIR,
+                      help='Directory for storing generated data')
     parser.add_argument('--log', default="INFO", help="Logging level.")
     parser.add_argument('--random_seed', default=271, help="Random seed.")
 

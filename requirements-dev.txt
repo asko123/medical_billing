@@ -1,0 +1,6 @@
+# Development Tools
+black>=21.6b0  # Code formatting
+flake8>=3.9.0  # Code linting
+pytest>=6.2.0  # Testing
+pytest-cov>=2.12.0  # Test coverage
+mypy>=0.910  # Type checking 

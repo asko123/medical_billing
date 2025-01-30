@@ -12,6 +12,11 @@ import multiprocessing
 from collections import defaultdict, Counter
 import csv
 import os
+from tqdm import tqdm
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 my_stopwords = set([stopword for stopword in stopwords.words('english')])
 my_stopwords.update({'admission', 'birth', 'date', 'discharge', 'service', 'sex', 'patient', 'name'
@@ -86,88 +91,232 @@ def clean_text(text, trantab, my_stopwords=None, stemmer=None):
     return text
 
 
-def write_discharge_summaries(out_filename='disch_full.csv'):
-    logging.info("processing notes file")
+def load_mimic_data():
+    """Load MIMIC data from CSV files"""
+    try:
+        notes_path = os.getenv('MIMIC_NOTES_PATH')
+        procedures_path = os.getenv('MIMIC_PROCEDURES_PATH')
+        
+        # Convert relative paths to absolute if needed
+        if not os.path.isabs(notes_path):
+            notes_path = os.path.abspath(os.path.join(os.getcwd(), notes_path))
+        if not os.path.isabs(procedures_path):
+            procedures_path = os.path.abspath(os.path.join(os.getcwd(), procedures_path))
+        
+        print(f"\nLoading data from:")
+        print(f"NOTEEVENTS: {notes_path}")
+        print(f"PROCEDURES: {procedures_path}")
+        
+        # Load NOTEEVENTS with detailed column info
+        notes_df = pd.read_csv(notes_path)
+        print("\nNOTEEVENTS.csv info:")
+        print(f"Shape: {notes_df.shape}")
+        print("\nColumns (with sample values):")
+        for col in notes_df.columns:
+            print(f"\n{col}:")
+            print(f"  Type: {notes_df[col].dtype}")
+            print(f"  Null values: {notes_df[col].isnull().sum()}")
+            print(f"  Sample unique values: {notes_df[col].unique()[:5]}")
+        
+        # Load PROCEDURES
+        procedures_df = pd.read_csv(procedures_path)
+        print(f"\nPROCEDURES.csv info:")
+        print(f"Shape: {procedures_df.shape}")
+        print(f"Columns: {procedures_df.columns.tolist()}")
+        
+        return notes_df, procedures_df
+    except Exception as e:
+        print(f"\nError loading MIMIC data: {str(e)}")
+        print("\nDebug information:")
+        print(f"Current working directory: {os.getcwd()}")
+        print(f"NOTEEVENTS path: {notes_path}")
+        print(f"PROCEDURES path: {procedures_path}")
+        raise
 
-    disch_df = pd.read_csv(constants.NOTEEVENTS_FILE_PATH)
-    selected_categories = ['Discharge summary']
-    disch_df = disch_df[disch_df['CATEGORY'].isin(selected_categories)]
-    disch_df['TEXT'] = disch_df['TEXT'].apply(lambda text: clean_text(text, trantab, my_stopwords, stemmer))
 
-    disch_df.sort_values(['SUBJECT_ID', 'HADM_ID'], inplace=True)
-    logging.info(f'Total number of rows: {len(disch_df)}')
-    hadm_id_set = set(disch_df['HADM_ID'])
-    logging.info(f'Total number of unique HADM_ID (disch_full): {len(hadm_id_set)}')
-    disch_df.to_csv(f'{constants.GENERATED_DIR}/{out_filename}', index=False,
-               columns=['SUBJECT_ID', 'HADM_ID', 'CHARTTIME', 'TEXT'],
-               header=['SUBJECT_ID', 'HADM_ID', 'CHARTTIME', 'TEXT'])
-
-    return hadm_id_set, out_filename
-
-
-def combine_notes_codes(disch_full_filename, filtered_codes_filename, out_filename='notes_labeled.csv'):
-    logging.info('Merging discharge summary and ICD codes')
-    disch_df = pd.read_csv(f'{constants.GENERATED_DIR}/{disch_full_filename}')
-    disch_grouped = disch_df.groupby('HADM_ID')['TEXT'].apply(lambda texts: ' '.join(texts))
-    disch_df = pd.DataFrame(disch_grouped)
-    disch_df.reset_index(inplace=True)
-
-    codes_df = pd.read_csv(f'{constants.GENERATED_DIR}/{filtered_codes_filename}', dtype={"ICD9_CODE": str})
-    codes_grouped = codes_df.groupby('HADM_ID')['ICD9_CODE'].apply(lambda codes: ';'.join(map(str, codes)))
-    codes_df = pd.DataFrame(codes_grouped)
-    codes_df.reset_index(inplace=True)
-
-    merged_df = pd.merge(disch_df, codes_df, on='HADM_ID')
-    merged_df.sort_values(['HADM_ID'], inplace=True)
-    num_hadm_id = len(merged_df['HADM_ID'].unique())
-    logging.info(f'Total number of unique HADM_ID (merged): {num_hadm_id}')
-
-    merged_df.to_csv(f'{constants.GENERATED_DIR}/{out_filename}', index=False,
-               columns=['HADM_ID', 'TEXT', 'ICD9_CODE'],
-               header=['HADM_ID', 'TEXT', 'LABELS'])
-
-    return out_filename
+def validate_data_files():
+    """Validate that required data files exist"""
+    required_files = [
+        constants.NOTEEVENTS_FILE_PATH,
+        constants.PROCEDURES_FILE_PATH,
+        constants.DIAGNOSES_FILE_PATH,
+        constants.DIAG_CODE_DESC_FILE_PATH,
+        constants.PROC_CODE_DESC_FILE_PATH,
+        constants.ICD_DESC_FILE_PATH
+    ]
+    
+    missing_files = []
+    for file_path in required_files:
+        if not os.path.exists(file_path):
+            missing_files.append(file_path)
+    
+    if missing_files:
+        print("\nError: Missing required MIMIC files:")
+        for file in missing_files:
+            print(f"- {file}")
+        print("\nPlease ensure all required MIMIC files are in the correct location.")
+        raise FileNotFoundError("Missing required MIMIC files")
 
 
-def split_data(labeled_notes_filename='notes_labeled.csv', is_full=True):
-    labeled_notes_df = pd.read_csv(f'{constants.GENERATED_DIR}/{labeled_notes_filename}')
-    counter = Counter()
-    for labels in labeled_notes_df['LABELS'].values:
-        for label in str(labels).split(';'):
-            counter[label] += 1
-
-    codes, freqs = map(list, zip(*counter.most_common()))
-    code_freq_df = pd.DataFrame({'code': codes, 'freq': freqs})
-    code_freq_filename = 'code_freq.csv'
-    code_freq_df.to_csv(f'{constants.GENERATED_DIR}/{code_freq_filename}', index=False)
-
-    if is_full:
-        content = 'full'
-        for split in ['train', 'dev', 'test']:
-            split_hadm_id_df = pd.read_csv(f'{constants.CAML_DIR}/{split}_{content}_hadm_ids.csv', names=['HADM_ID'])
-            split_hadm_ids = split_hadm_id_df['HADM_ID'].values.tolist()
-
-            split_labeled_notes_df = labeled_notes_df[labeled_notes_df['HADM_ID'].isin(split_hadm_ids)]
-            split_labeled_notes_df['LENGTH'] = split_labeled_notes_df['TEXT'].apply(lambda text: len(str(text).split()))
-            split_labeled_notes_df = split_labeled_notes_df.sort_values(['LENGTH'], ascending=False)
-            logging.info(f'Total rows in {split}_{content}.csv: {len(split_labeled_notes_df)}')
-            split_labeled_notes_df.to_csv(f'{constants.GENERATED_DIR}/{split}_{content}.csv', index=False)
+def write_discharge_summaries():
+    """Process and write discharge summaries"""
+    notes_df, _ = load_mimic_data()
+    
+    print("\nDataset Overview:")
+    print(f"Total number of notes: {len(notes_df)}")
+    
+    # Print all column names for debugging
+    print("\nColumns in NOTEEVENTS.csv:")
+    for col in notes_df.columns:
+        print(f"- {col}")
+        if col.lower() in ['category', 'description']:
+            print(f"\nUnique values in {col}:")
+            print(notes_df[col].value_counts().head(10))
+    
+    # Try to find any column that might contain category information
+    category_like_cols = [col for col in notes_df.columns 
+                         if any(term in col.upper() 
+                               for term in ['CATEGORY', 'TYPE', 'CLASS', 'DESC'])]
+    
+    if category_like_cols:
+        print("\nFound columns that might contain category information:")
+        for col in category_like_cols:
+            print(f"\n{col}:")
+            print("Sample values:")
+            print(notes_df[col].value_counts().head(10))
+    
+    # Determine which column to use for categories
+    if 'category' in notes_df.columns:
+        category_col = 'category'
+    elif 'CATEGORY' in notes_df.columns:
+        category_col = 'CATEGORY'
+    elif 'category_description' in notes_df.columns:
+        category_col = 'category_description'
+    elif 'CATEGORY_DESCRIPTION' in notes_df.columns:
+        category_col = 'CATEGORY_DESCRIPTION'
+    elif 'description' in notes_df.columns:
+        category_col = 'description'
+    elif 'DESCRIPTION' in notes_df.columns:
+        category_col = 'DESCRIPTION'
     else:
-        content = 50
-        top_codes = set(codes[:content])
+        raise KeyError(
+            "Could not find category column in NOTEEVENTS.csv.\n"
+            f"Available columns: {notes_df.columns.tolist()}\n"
+            "Expected one of: CATEGORY, CATEGORY_DESCRIPTION, or DESCRIPTION"
+        )
+    
+    print(f"\nUsing {category_col} column to identify discharge summaries")
+    
+    # Select discharge summaries - try different possible category values
+    possible_categories = [
+        'discharge summary',
+        'discharge summaries',
+        'discharge',
+        'summary',
+        'Discharge summary',
+        'Discharge Summary',
+        'DISCHARGE SUMMARY',
+        'Discharge note',
+        'Discharge Report'
+    ]
+    
+    # Print all unique categories before filtering
+    print(f"\nAll unique values in {category_col} column:")
+    print(notes_df[category_col].value_counts())
+    
+    # Try case-insensitive matching
+    pattern = '|'.join(possible_categories)
+    print(f"\nLooking for categories matching pattern: {pattern}")
+    
+    # Filter for discharge summaries
+    disch_df = notes_df[notes_df[category_col].str.contains(pattern, case=False, na=False)]
+    
+    if len(disch_df) == 0:
+        print("\nWarning: No discharge summaries found!")
+        print(f"\nSample of available categories in {category_col}:")
+        print(notes_df[category_col].value_counts().head(20))
+        
+        # Try to find any similar categories
+        print("\nSearching for similar categories...")
+        all_categories = notes_df[category_col].unique()
+        similar_found = [cat for cat in all_categories 
+                        if any(term.lower() in str(cat).lower() 
+                              for term in ['discharge', 'summary', 'report'])]
+        if similar_found:
+            print("\nFound similar categories:")
+            for cat in similar_found:
+                print(f"- {cat}")
+        
+        raise ValueError("No discharge summaries found in the dataset")
+    
+    print(f"\nFound {len(disch_df)} discharge summaries")
+    print("\nSample of found discharge summaries:")
+    print(disch_df[[category_col, 'text']].head())
+    
+    # Sort by HADM_ID and CHARTDATE/CHARTTIME to get the latest note for each admission
+    if 'CHARTDATE' in disch_df.columns:
+        sort_col = 'CHARTDATE'
+    elif 'CHARTTIME' in disch_df.columns:
+        sort_col = 'CHARTTIME'
+    else:
+        raise KeyError("Could not find CHARTDATE or CHARTTIME column in NOTEEVENTS.csv")
+    
+    # Sort and get latest note for each admission
+    disch_df = disch_df.sort_values(['HADM_ID', sort_col]).groupby('HADM_ID').last().reset_index()
+    
+    # Create output directory if it doesn't exist
+    os.makedirs('mimicdata/processed', exist_ok=True)
+    
+    # Write processed discharge summaries
+    output_filename = 'mimicdata/processed/discharge_summaries.csv'
+    disch_df.to_csv(output_filename, index=False)
+    
+    print(f"\nWrote {len(disch_df)} discharge summaries to {output_filename}")
+    
+    # Return set of HADM_IDs and filename
+    return set(disch_df['HADM_ID'].unique()), output_filename
 
-        for split in ['train', 'dev', 'test']:
-            split_hadm_id_df = pd.read_csv(f'{constants.CAML_DIR}/{split}_{content}_hadm_ids.csv', names=['HADM_ID'])
-            split_hadm_ids = split_hadm_id_df['HADM_ID'].values.tolist()
 
-            split_labeled_notes_df = labeled_notes_df[labeled_notes_df['HADM_ID'].isin(split_hadm_ids)]
-            split_labeled_notes_df['LABELS'] = split_labeled_notes_df['LABELS'].apply(lambda codes: ';'.join(top_codes.intersection(set(codes.split(';')))))
-            split_labeled_notes_df = split_labeled_notes_df[split_labeled_notes_df['LABELS'].str.len() > 0]
+def process_procedures():
+    """Process procedures data"""
+    _, procedures_df = load_mimic_data()
+    
+    # Group procedures by admission
+    proc_by_admission = procedures_df.groupby('HADM_ID')['ICD9_CODE'].apply(list).reset_index()
+    
+    # Write processed procedures
+    output_filename = 'mimicdata/processed/procedures_by_admission.csv'
+    proc_by_admission.to_csv(output_filename, index=False)
+    
+    return proc_by_admission
 
-            split_labeled_notes_df['LENGTH'] = split_labeled_notes_df['TEXT'].apply(lambda text: len(str(text).split()))
-            split_labeled_notes_df = split_labeled_notes_df.sort_values(['LENGTH'], ascending=False)
-            logging.info(f'Total rows in {split}_{content}.csv: {len(split_labeled_notes_df)}')
-            split_labeled_notes_df.to_csv(f'{constants.GENERATED_DIR}/{split}_{content}.csv', index=False)
+
+def create_datasets(hadm_ids, split_ratios=[0.7, 0.1, 0.2]):
+    """Create train/dev/test splits"""
+    hadm_ids = list(hadm_ids)
+    np.random.shuffle(hadm_ids)
+    
+    # Calculate split points
+    train_end = int(len(hadm_ids) * split_ratios[0])
+    dev_end = int(len(hadm_ids) * (split_ratios[0] + split_ratios[1]))
+    
+    # Split data
+    train_ids = hadm_ids[:train_end]
+    dev_ids = hadm_ids[train_end:dev_end]
+    test_ids = hadm_ids[dev_end:]
+    
+    # Create output directory
+    os.makedirs('mimicdata/caml', exist_ok=True)
+    
+    # Write full splits
+    pd.Series(train_ids).to_csv('mimicdata/caml/train_full_hadm_ids.csv', index=False)
+    pd.Series(dev_ids).to_csv('mimicdata/caml/dev_full_hadm_ids.csv', index=False)
+    pd.Series(test_ids).to_csv('mimicdata/caml/test_full_hadm_ids.csv', index=False)
+    
+    # Write 50% splits
+    pd.Series(train_ids[:len(train_ids)//2]).to_csv('mimicdata/caml/train_50_hadm_ids.csv', index=False)
+    pd.Series(dev_ids[:len(dev_ids)//2]).to_csv('mimicdata/caml/dev_50_hadm_ids.csv', index=False)
+    pd.Series(test_ids[:len(test_ids)//2]).to_csv('mimicdata/caml/test_50_hadm_ids.csv', index=False)
 
 
 def build_vocab(train_full_filename='train_full.csv', out_filename='vocab.csv'):
@@ -273,19 +422,81 @@ def vectorize_code_desc(word_to_idx, out_filename='code_desc_vectors.csv'):
             w.writerow([code] + [str(i) for i in inds])
 
 
-if __name__ == '__main__':
+def inspect_noteevents():
+    """Helper function to inspect NOTEEVENTS.csv structure"""
+    try:
+        print(f"\nAttempting to inspect: {constants.NOTEEVENTS_FILE_PATH}")
+        
+        # Check if file exists
+        if not os.path.exists(constants.NOTEEVENTS_FILE_PATH):
+            print(f"Error: File not found at {constants.NOTEEVENTS_FILE_PATH}")
+            return
+        
+        # Check file size
+        file_size = os.path.getsize(constants.NOTEEVENTS_FILE_PATH)
+        print(f"File size: {file_size / (1024*1024):.2f} MB")
+        
+        if file_size == 0:
+            print("Error: File is empty")
+            return
+        
+        # Try to read the file header
+        print("\nFile header:")
+        with open(constants.NOTEEVENTS_FILE_PATH, 'r') as f:
+            header = f.readline().strip()
+            print(header)
+        
+        # Load the data
+        notes_df = pd.read_csv(constants.NOTEEVENTS_FILE_PATH)
+        print("\nNOTEEVENTS.csv structure:")
+        print(f"\nShape: {notes_df.shape}")
+        print("\nColumns:")
+        for col in notes_df.columns:
+            print(f"- {col}")
+            n_nulls = notes_df[col].isnull().sum()
+            n_unique = notes_df[col].nunique()
+            print(f"  Null values: {n_nulls}")
+            print(f"  Unique values: {n_unique}")
+        
+        # Try to find category-like columns
+        category_cols = [col for col in notes_df.columns if 'CATEGORY' in col.upper() or 'TYPE' in col.upper() or 'DESC' in col.upper()]
+        if category_cols:
+            print("\nPossible category columns found:")
+            for col in category_cols:
+                print(f"\n{col} sample values:")
+                print(notes_df[col].value_counts().head())
+        
+        print(f"\nTotal notes: {len(notes_df)}")
+        
+    except Exception as e:
+        print(f"Error inspecting NOTEEVENTS.csv: {e}")
+        print("\nDebug information:")
+        print(f"Current working directory: {os.getcwd()}")
+        print(f"File path: {constants.NOTEEVENTS_FILE_PATH}")
+
+
+def main():
+    """Main preprocessing pipeline"""
+    print("Inspecting NOTEEVENTS structure...")
+    inspect_noteevents()
+    
+    print("\nProcessing discharge summaries...")
+    hadm_id_set, disch_filename = write_discharge_summaries()
+    
+    print("\nProcessing procedures...")
+    proc_by_admission = process_procedures()
+    
+    print("\nCreating dataset splits...")
+    create_datasets(hadm_id_set)
+    
+    print("\nPreprocessing complete!")
+
+
+if __name__ == "__main__":
     if not os.path.exists('../results'):
         os.makedirs('../results')
     args = constants.get_args()
     FORMAT = '%(asctime)-15s %(message)s'
     logging.basicConfig(filename='../results/preprocess.log', filemode='w', format=FORMAT, level=logging.INFO)
-    hadm_id_set, disch_full_filename = write_discharge_summaries()
-    filtered_codes_filename = combine_diag_proc_codes(hadm_id_set)
-    labeled_notes_filename = combine_notes_codes(disch_full_filename, filtered_codes_filename)
-    split_data()
-    split_data(is_full=False)
-    build_vocab()
-    embed_filename = embed_words(embed_size=args.embed_size)
-    word_to_idx = map_vocab_to_embed()
-    vectorize_code_desc(word_to_idx)
+    main()
 
